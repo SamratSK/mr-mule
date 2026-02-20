@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Live CSV Socket Demo</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --card: #0b1224;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --accent: #22d3ee;
+        --accent-2: #f97316;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        color: var(--text);
+        background: radial-gradient(1200px 800px at 20% -10%, #1f2937, transparent),
+                    radial-gradient(900px 700px at 120% 10%, #0b132a, transparent),
+                    var(--bg);
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 32px auto;
+        padding: 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+        font-weight: 700;
+      }
+      p { color: var(--muted); margin: 0 0 16px; }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      .card {
+        background: linear-gradient(180deg, #0f172a 0%, #0b1224 100%);
+        border: 1px solid #1f2937;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+      }
+      .label {
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 8px;
+      }
+      .tabs {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .tab {
+        border: 1px solid #27324a;
+        background: #0b1224;
+        color: var(--text);
+        padding: 8px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: 120ms ease;
+      }
+      .tab.active {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.2);
+        color: var(--accent);
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-top: 12px;
+      }
+      input[type="number"] {
+        width: 140px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #27324a;
+        background: #0b1224;
+        color: var(--text);
+      }
+      button.send {
+        margin-top: 16px;
+        background: var(--accent-2);
+        color: #0b1224;
+        border: none;
+        padding: 10px 14px;
+        border-radius: 8px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .status {
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      textarea {
+        width: 100%;
+        height: 240px;
+        resize: none;
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid #27324a;
+        background: #0b1224;
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+      }
+      .badge {
+        display: inline-block;
+        margin-left: 6px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      @media (max-width: 860px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Live CSV Socket Demo</h1>
+      <p>Pick a From and To person (A–E). If you select the same person on both sides, the other side resets. Send to generate a CSV row over WebSocket.</p>
+
+      <div class="grid">
+        <div class="card">
+          <div class="label">From</div>
+          <div class="tabs" id="fromTabs"></div>
+
+          <div class="label" style="margin-top:16px;">To</div>
+          <div class="tabs" id="toTabs"></div>
+
+          <div class="row">
+            <label class="label" style="margin:0;">Amount</label>
+            <input id="amount" type="number" min="1" step="0.01" value="250" />
+            <span class="badge" id="selectionBadge">From: — | To: —</span>
+          </div>
+
+          <button class="send" id="sendBtn">Send Transaction</button>
+          <div class="status" id="status">Socket: connecting…</div>
+        </div>
+
+        <div class="card">
+          <div class="label">CSV Output</div>
+          <textarea id="csvOutput" readonly>transaction_id,sender_id,receiver_id,amount,timestamp
+</textarea>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const people = ["A", "B", "C", "D", "E"].map((p) => `ACC_${p}`);
+      const fromTabs = document.getElementById("fromTabs");
+      const toTabs = document.getElementById("toTabs");
+      const badge = document.getElementById("selectionBadge");
+      const statusEl = document.getElementById("status");
+      const output = document.getElementById("csvOutput");
+      const amountEl = document.getElementById("amount");
+      const sendBtn = document.getElementById("sendBtn");
+
+      let selectedFrom = null;
+      let selectedTo = null;
+
+      function renderTabs(container, type) {
+        container.innerHTML = "";
+        people.forEach((p) => {
+          const btn = document.createElement("button");
+          btn.className = "tab";
+          btn.textContent = p;
+          btn.addEventListener("click", () => handleSelect(type, p));
+          container.appendChild(btn);
+        });
+      }
+
+      function syncActive() {
+        [...fromTabs.children].forEach((el) => {
+          el.classList.toggle("active", el.textContent === selectedFrom);
+        });
+        [...toTabs.children].forEach((el) => {
+          el.classList.toggle("active", el.textContent === selectedTo);
+        });
+        badge.textContent = `From: ${selectedFrom ?? "—"} | To: ${selectedTo ?? "—"}`;
+      }
+
+      function handleSelect(type, person) {
+        if (type === "from") {
+          selectedFrom = person;
+          if (selectedTo === person) selectedTo = null; // reset other side
+        } else {
+          selectedTo = person;
+          if (selectedFrom === person) selectedFrom = null; // reset other side
+        }
+        syncActive();
+      }
+
+      renderTabs(fromTabs, "from");
+      renderTabs(toTabs, "to");
+      syncActive();
+
+      const ws = new WebSocket(`ws://${location.host}`);
+
+      ws.addEventListener("open", () => {
+        statusEl.textContent = "Socket: connected";
+      });
+
+      ws.addEventListener("close", () => {
+        statusEl.textContent = "Socket: disconnected";
+      });
+
+      ws.addEventListener("message", (evt) => {
+        let msg;
+        try {
+          msg = JSON.parse(evt.data);
+        } catch {
+          return;
+        }
+        if (msg.type === "csv") {
+          output.value += msg.row + "\n";
+          output.scrollTop = output.scrollHeight;
+        } else if (msg.type === "error") {
+          statusEl.textContent = `Socket error: ${msg.message}`;
+        }
+      });
+
+      sendBtn.addEventListener("click", () => {
+        if (!selectedFrom || !selectedTo) {
+          statusEl.textContent = "Pick both From and To.";
+          return;
+        }
+        if (selectedFrom === selectedTo) {
+          statusEl.textContent = "From and To must be different.";
+          return;
+        }
+        const amount = Number(amountEl.value || 0);
+        ws.send(JSON.stringify({ type: "tx", from: selectedFrom, to: selectedTo, amount }));
+      });
+    </script>
+  </body>
+</html>
